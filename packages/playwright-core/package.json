@@ -40,7 +40,8 @@
     "./lib/zipBundle": "./lib/zipBundle.js"
   },
   "bin": {
-    "playwright-core": "cli.js"
+    "playwright-core": "cli.js",
+    "playwright-cli": "playwright-cli.js"
   },
   "types": "types/types.d.ts"
 }

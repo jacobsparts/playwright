@@ -19,6 +19,7 @@
       "default": "./index.js"
     },
     "./package.json": "./package.json",
+    "./lib/cli/client/program": "./lib/cli/client/program.js",
     "./lib/common/configLoader": "./lib/common/configLoader.js",
     "./lib/fsWatcher": "./lib/fsWatcher.js",
     "./lib/mcp/index": "./lib/mcp/index.js",
