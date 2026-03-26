@@ -105,6 +105,12 @@ export type Config = {
    */
   extension?: boolean;
 
+  /**
+   * Connect to a browser-control server. Value is the server URL
+   * (e.g. "http://localhost:3001"). If specified, `browser` launch config is ignored.
+   */
+  browserControl?: string;
+
   server?: {
     /**
      * The port to listen on for SSE or MCP transport.

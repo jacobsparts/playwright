@@ -20,6 +20,7 @@
 [playwright.ts]
 ./android/
 ./bidi/
+./browserControl/
 ./chromium/
 ./electron/
 ./firefox/

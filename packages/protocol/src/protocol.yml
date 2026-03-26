@@ -1040,6 +1040,17 @@ BrowserType:
         browser: Browser
         defaultContext: BrowserContext?
 
+    connectToBrowserControl:
+      title: Connect to browser control server
+      parameters:
+        serviceURL: string
+        sessionId: string?
+        slowMo: float?
+        timeout: float
+      returns:
+        browser: Browser
+        defaultContext: BrowserContext?
+
 Browser:
   type: interface
 

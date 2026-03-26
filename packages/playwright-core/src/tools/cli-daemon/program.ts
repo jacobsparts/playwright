@@ -31,6 +31,7 @@ import type { FullConfig } from '../mcp/config';
 program.argument('[session-name]', 'name of the session to create or connect to', 'default')
     .option('--headed', 'run in headed mode (non-headless)')
     .option('--extension', 'run with the extension')
+    .option('--browser-control <url>', 'connect to a browser-control server')
     .option('--browser <name>', 'browser to use (chromium, chrome, firefox, webkit)')
     .option('--persistent', 'use a persistent browser context')
     .option('--profile <path>', 'path to the user data dir')
@@ -82,6 +83,7 @@ export async function resolveCLIConfig(clientInfo: ClientInfo, sessionName: stri
     browser: options.browser,
     headless: options.headed ? false : undefined,
     extension: options.extension,
+    browserControl: options.browserControl,
     userDataDir: options.profile,
     snapshotMode: 'full',
   });
@@ -104,9 +106,9 @@ export async function resolveCLIConfig(clientInfo: ClientInfo, sessionName: stri
   result = configUtils.mergeConfig(result, envOverrides);
 
   if (result.browser.isolated === undefined)
-    result.browser.isolated = !options.profile && !options.persistent && !result.browser.userDataDir && !result.browser.remoteEndpoint && !result.extension;
+    result.browser.isolated = !options.profile && !options.persistent && !result.browser.userDataDir && !result.browser.remoteEndpoint && !result.extension && !result.browserControl;
 
-  if (!result.extension && !result.browser.isolated && !result.browser.userDataDir && !result.browser.remoteEndpoint) {
+  if (!result.extension && !result.browserControl && !result.browser.isolated && !result.browser.userDataDir && !result.browser.remoteEndpoint) {
     // No custom value provided, use the daemon data dir.
     const browserToken = result.browser.launchOptions?.channel ?? result.browser?.browserName;
     const userDataDir = path.resolve(clientInfo.daemonProfilesDir, `ud-${sessionName}-${browserToken}`);

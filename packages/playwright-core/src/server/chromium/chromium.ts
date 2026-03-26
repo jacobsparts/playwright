@@ -142,6 +142,29 @@ export class Chromium extends BrowserType {
     return this._connectOverCDPImpl(progress, transport, closeAndWait, { isLocal: true });
   }
 
+  override async connectToBrowserControl(progress: Progress, serviceURL: string, options: { slowMo?: number, timeout?: number, sessionId?: string }) {
+    const artifactsDir = await progress.race(fs.promises.mkdtemp(ARTIFACTS_FOLDER));
+    const browserProcess: BrowserProcess = {
+      close: async () => { await removeFolders([artifactsDir]); },
+      kill: async () => { await removeFolders([artifactsDir]); },
+    };
+    const browserOptions: BrowserOptions = {
+      slowMo: options.slowMo,
+      name: 'chromium',
+      browserType: 'chromium',
+      persistent: { noDefaultViewport: true },
+      browserProcess,
+      protocolLogger: helper.debugProtocolLogger(),
+      browserLogsCollector: new RecentLogsCollector(),
+      artifactsDir,
+      downloadsPath: artifactsDir,
+      tracesDir: artifactsDir,
+      originalLaunchOptions: {},
+    };
+    const { BCBrowser } = require('../browserControl/bcBrowser') as typeof import('../browserControl/bcBrowser');
+    return await progress.race(BCBrowser.connect(this.attribution.playwright, serviceURL, browserOptions, options.sessionId));
+  }
+
   private _createDevTools() {
     // TODO: this is totally wrong when using channels.
     const directory = registry.findExecutable('chromium').directory;

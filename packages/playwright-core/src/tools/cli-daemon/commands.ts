@@ -50,6 +50,7 @@ const open = declareCommand({
   }),
   options: z.object({
     browser: z.string().optional().describe('Browser or chrome channel to use, possible values: chrome, firefox, webkit, msedge.'),
+    'browser-control': z.string().optional().describe('Connect to a browser-control server at the given URL'),
     config: z.string().optional().describe('Path to the configuration file, defaults to .playwright/cli.config.json'),
     extension: z.boolean().optional().describe('Connect to browser extension'),
     headed: z.boolean().optional().describe('Run browser in headed mode'),

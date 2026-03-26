@@ -57,7 +57,9 @@ export async function createBrowserWithInfo(config: FullConfig, clientInfo: Clie
     return await createRemoteBrowser(config);
 
   let browser: playwright.Browser;
-  if (config.browser.cdpEndpoint)
+  if (config.browserControl)
+    browser = await createBrowserControlBrowser(config, clientInfo);
+  else if (config.browser.cdpEndpoint)
     browser = await createCDPBrowser(config, clientInfo);
   else if (config.browser.isolated)
     browser = await createIsolatedBrowser(config, clientInfo);
@@ -98,6 +100,18 @@ async function createIsolatedBrowser(config: FullConfig, clientInfo: ClientInfoE
     if (error.message.includes('Executable doesn\'t exist'))
       throwBrowserIsNotInstalledError(config);
     throw error;
+  });
+  await startServer(browser, clientInfo);
+  return browser;
+}
+
+async function createBrowserControlBrowser(config: FullConfig, clientInfo: ClientInfoEx): Promise<playwright.Browser> {
+  testDebug('create browser (browser-control)');
+  // eslint-disable-next-line no-restricted-imports
+  const { BrowserType } = require('../../client/browserType') as typeof import('../../client/browserType');
+  const browserType = playwright.chromium as InstanceType<typeof BrowserType>;
+  const browser = await browserType.connectToBrowserControl(config.browserControl!, {
+    timeout: 10000,
   });
   await startServer(browser, clientInfo);
   return browser;

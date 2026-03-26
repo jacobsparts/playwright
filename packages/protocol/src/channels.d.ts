@@ -900,6 +900,7 @@ export interface BrowserTypeChannel extends BrowserTypeEventTarget, Channel {
   launchPersistentContext(params: BrowserTypeLaunchPersistentContextParams, progress?: Progress): Promise<BrowserTypeLaunchPersistentContextResult>;
   connectOverCDP(params: BrowserTypeConnectOverCDPParams, progress?: Progress): Promise<BrowserTypeConnectOverCDPResult>;
   connectOverCDPTransport(params: BrowserTypeConnectOverCDPTransportParams, progress?: Progress): Promise<BrowserTypeConnectOverCDPTransportResult>;
+  connectToBrowserControl(params: BrowserTypeConnectToBrowserControlParams, progress?: Progress): Promise<BrowserTypeConnectToBrowserControlResult>;
 }
 export type BrowserTypeLaunchParams = {
   channel?: string,
@@ -1152,6 +1153,20 @@ export type BrowserTypeConnectOverCDPTransportOptions = {
 
 };
 export type BrowserTypeConnectOverCDPTransportResult = {
+  browser: BrowserChannel,
+  defaultContext?: BrowserContextChannel,
+};
+export type BrowserTypeConnectToBrowserControlParams = {
+  serviceURL: string,
+  sessionId?: string,
+  slowMo?: number,
+  timeout: number,
+};
+export type BrowserTypeConnectToBrowserControlOptions = {
+  sessionId?: string,
+  slowMo?: number,
+};
+export type BrowserTypeConnectToBrowserControlResult = {
   browser: BrowserChannel,
   defaultContext?: BrowserContextChannel,
 };

@@ -47,6 +47,7 @@ export type CLIOptions = {
   consoleLevel?: 'error' | 'warning' | 'info' | 'debug';
   device?: string;
   extension?: boolean;
+  browserControl?: string;
   executablePath?: string;
   grantPermissions?: string[];
   headless?: boolean;
@@ -235,6 +236,7 @@ export function configFromCLIOptions(cliOptions: CLIOptions): Config & { configF
       initScript: cliOptions.initScript,
     },
     extension: cliOptions.extension,
+    browserControl: cliOptions.browserControl,
     server: {
       port: cliOptions.port,
       host: cliOptions.host,

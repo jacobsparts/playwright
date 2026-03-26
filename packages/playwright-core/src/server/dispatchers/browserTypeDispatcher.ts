@@ -72,4 +72,16 @@ export class BrowserTypeDispatcher extends Dispatcher<BrowserType, channels.Brow
     const browserDispatcher = new BrowserDispatcher(this, browser);
     return { browser: browserDispatcher, defaultContext: browser._defaultContext ? BrowserContextDispatcher.from(browserDispatcher, browser._defaultContext) : undefined };
   }
+
+  async connectToBrowserControl(params: channels.BrowserTypeConnectToBrowserControlParams, progress: Progress): Promise<channels.BrowserTypeConnectToBrowserControlResult> {
+    if (this._denyLaunch)
+      throw new Error(`Launching more browsers is not allowed.`);
+
+    const browser = await this._object.connectToBrowserControl(progress, params.serviceURL, params);
+    const browserDispatcher = new BrowserDispatcher(this, browser);
+    return {
+      browser: browserDispatcher,
+      defaultContext: browser._defaultContext ? BrowserContextDispatcher.from(browserDispatcher, browser._defaultContext) : undefined,
+    };
+  }
 }

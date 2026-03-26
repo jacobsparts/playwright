@@ -647,6 +647,16 @@ scheme.BrowserTypeConnectOverCDPTransportResult = tObject({
   browser: tChannel(['Browser']),
   defaultContext: tOptional(tChannel(['BrowserContext'])),
 });
+scheme.BrowserTypeConnectToBrowserControlParams = tObject({
+  serviceURL: tString,
+  sessionId: tOptional(tString),
+  slowMo: tOptional(tFloat),
+  timeout: tFloat,
+});
+scheme.BrowserTypeConnectToBrowserControlResult = tObject({
+  browser: tChannel(['Browser']),
+  defaultContext: tOptional(tChannel(['BrowserContext'])),
+});
 scheme.BrowserInitializer = tObject({
   version: tString,
   name: tString,

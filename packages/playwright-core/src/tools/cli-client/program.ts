@@ -42,6 +42,7 @@ type GlobalOptions = {
 type OpenOptions = {
   attach?: string;
   browser?: string;
+  browserControl?: string;
   config?: string;
   extension?: boolean;
   headed?: boolean;
@@ -49,9 +50,10 @@ type OpenOptions = {
   profile?: string;
 };
 
-const globalOptions: (keyof (GlobalOptions & OpenOptions))[] = [
+const globalOptions: string[] = [
   'attach',
   'browser',
+  'browser-control',
   'config',
   'extension',
   'headed',

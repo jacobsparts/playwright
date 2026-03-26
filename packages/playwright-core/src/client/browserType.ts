@@ -174,4 +174,20 @@ export class BrowserType extends ChannelOwner<channels.BrowserTypeChannel> imple
       await this._instrumentation.runAfterCreateBrowserContext(BrowserContext.from(result.defaultContext));
     return browser;
   }
+
+  async connectToBrowserControl(serviceURL: string, options: { sessionId?: string, slowMo?: number, timeout?: number } = {}): Promise<Browser> {
+    if (this.name() !== 'chromium')
+      throw new Error('Connecting to browser control is only supported in Chromium.');
+    const result = await this._channel.connectToBrowserControl({
+      serviceURL,
+      sessionId: options.sessionId,
+      slowMo: options.slowMo,
+      timeout: new TimeoutSettings(this._platform).timeout(options),
+    });
+    const browser = Browser.from(result.browser);
+    browser._connectToBrowserType(this, {}, undefined);
+    if (result.defaultContext)
+      await this._instrumentation.runAfterCreateBrowserContext(BrowserContext.from(result.defaultContext));
+    return browser;
+  }
 }
