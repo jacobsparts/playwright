@@ -1069,6 +1069,15 @@ export async function ariaSnapshotForFrame(progress: Progress, frame: frames.Fra
     }
   });
 
+  // Normalize snapshot in case the backend returned incomplete data
+  // (e.g. browser-control where injected script serialization may lose properties).
+  if (!snapshot.full && snapshot.full !== '')
+    snapshot.full = '';
+  if (!snapshot.iframeRefs)
+    snapshot.iframeRefs = [];
+  if (!snapshot.iframeDepths)
+    snapshot.iframeDepths = {};
+
   // Only fetch child snapshots for iframes that were actually rendered (not filtered by depth).
   const renderedIframeRefs = snapshot.iframeRefs.filter(ref => ref in snapshot.iframeDepths);
   const childSnapshotPromises = renderedIframeRefs.map(ref => {

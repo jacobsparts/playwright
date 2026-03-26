@@ -267,9 +267,13 @@ export class Tab extends EventEmitter<TabEventsInterface> {
 
   async headerSnapshot(): Promise<TabHeader & { changed: boolean }> {
     let title: string | undefined;
-    await this._raceAgainstModalStates(async () => {
-      title = await this.page.title();
-    });
+    try {
+      await this._raceAgainstModalStates(async () => {
+        title = await this.page.title();
+      });
+    } catch {
+      // Browser-control backend may not support title evaluation.
+    }
     const newHeader: TabHeader = {
       title: title ?? '',
       url: this.page.url(),
@@ -375,16 +379,23 @@ export class Tab extends EventEmitter<TabEventsInterface> {
   async captureSnapshot(selector: string | undefined, depth: number | undefined, relativeTo: string | undefined): Promise<TabSnapshot> {
     await this._initializedPromise;
     let tabSnapshot: TabSnapshot | undefined;
-    const modalStates = await this._raceAgainstModalStates(async () => {
-      const ariaSnapshot = selector
-        ? await this.page.locator(selector).ariaSnapshot({ mode: 'ai', depth })
-        : await this.page.ariaSnapshot({ mode: 'ai', depth });
-      tabSnapshot = {
-        ariaSnapshot,
-        modalStates: [],
-        events: [],
-      };
-    });
+    let modalStates: ModalState[] = [];
+    try {
+      modalStates = await this._raceAgainstModalStates(async () => {
+        const ariaSnapshot = selector
+          ? await this.page.locator(selector).ariaSnapshot({ mode: 'ai', depth })
+          : await this.page.ariaSnapshot({ mode: 'ai', depth });
+        tabSnapshot = {
+          ariaSnapshot,
+          modalStates: [],
+          events: [],
+        };
+      });
+    } catch {
+      // Browser-control and other lightweight backends may not support
+      // injected-script-based aria snapshots.  Fall through to the
+      // fallback return below.
+    }
     if (tabSnapshot) {
       tabSnapshot.consoleLink = await this._consoleLog.take(relativeTo);
       tabSnapshot.events = this._recentEventEntries;
