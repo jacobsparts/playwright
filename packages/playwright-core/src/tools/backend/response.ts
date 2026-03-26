@@ -232,7 +232,7 @@ export class Response {
     const text: string[] = [];
     if (tabSnapshot?.consoleLink)
       text.push(`- New console entries: ${tabSnapshot.consoleLink}`);
-    if (tabSnapshot?.events.filter(event => event.type !== 'request').length) {
+    if (tabSnapshot?.events?.filter(event => event.type !== 'request').length) {
       for (const event of tabSnapshot.events) {
         if (event.type === 'download-start')
           text.push(`- Downloading file ${event.download.download.suggestedFilename()} ...`);
