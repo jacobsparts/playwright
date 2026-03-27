@@ -62,6 +62,58 @@ export class BrowserControlConnection {
       this._post(`/browser-control/client/${this._sessionId}/resize`, { width, height }));
   }
 
+  /**
+   * Execute JavaScript in the extension context (has access to chrome.* APIs).
+   * Unlike execute() which runs in the tab's content script context.
+   */
+  async executeExtension(script: string): Promise<any> {
+    const resp = await this._serialized(() =>
+      this._post(`/browser-control/client/${this._sessionId}/execute-extension`, { script }));
+    return resp.result;
+  }
+
+  async getCookies(urls: string[]): Promise<any[]> {
+    const urlsJson = JSON.stringify(urls);
+    return await this.executeExtension(`
+      var allCookies = [], seen = new Set();
+      var cookiesGet = function(p) { return promisify(chrome.cookies.getAll.bind(chrome.cookies), p); };
+      var urls = ${urlsJson};
+      if (!urls.length) return await cookiesGet({});
+      for (var i = 0; i < urls.length; i++) {
+        var cookies = await cookiesGet({ url: urls[i] });
+        for (var j = 0; j < cookies.length; j++) {
+          var c = cookies[j];
+          var key = c.domain + '|' + c.path + '|' + c.name;
+          if (!seen.has(key)) { seen.add(key); allCookies.push(c); }
+        }
+      }
+      return allCookies;
+    `) || [];
+  }
+
+  async setCookies(cookies: any[]): Promise<void> {
+    const cookiesJson = JSON.stringify(cookies);
+    await this.executeExtension(`
+      var cookiesSet = function(p) { return promisify(chrome.cookies.set.bind(chrome.cookies), p); };
+      var cookies = ${cookiesJson};
+      for (var i = 0; i < cookies.length; i++) await cookiesSet(cookies[i]);
+    `);
+  }
+
+  async clearCookies(): Promise<void> {
+    await this.executeExtension(`
+      var cookiesGetAll = function(p) { return promisify(chrome.cookies.getAll.bind(chrome.cookies), p); };
+      var cookiesRemove = function(p) { return promisify(chrome.cookies.remove.bind(chrome.cookies), p); };
+      var cookies = await cookiesGetAll({});
+      for (var i = 0; i < cookies.length; i++) {
+        var c = cookies[i];
+        var protocol = c.secure ? 'https' : 'http';
+        var url = protocol + '://' + c.domain.replace(/^\\./, '') + c.path;
+        await cookiesRemove({ url: url, name: c.name });
+      }
+    `);
+  }
+
   async closeSession(): Promise<void> {
     await this._serialized(() =>
       this._request('DELETE', `/browser-control/client/${this._sessionId}`));
