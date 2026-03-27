@@ -54,6 +54,7 @@ const globalOptions: string[] = [
   'attach',
   'browser',
   'browser-control',
+  'browser-control-session-id',
   'config',
   'extension',
   'headed',

@@ -26,6 +26,28 @@ import type { InitScript, PageDelegate } from '../page';
 import type { Progress } from '../progress';
 import type * as types from '../types';
 
+// ---------------------------------------------------------------------------
+// Shared helpers injected into the page for realistic event dispatch.
+// ---------------------------------------------------------------------------
+
+// Common MouseEvent init properties, mirroring what a real browser produces.
+function mouseInit(x: number, y: number, button: number, clickCount: number): string {
+  return `clientX:${x},clientY:${y},screenX:${x},screenY:${y},button:${button},buttons:${button === 0 ? 1 : button === 2 ? 2 : 4},detail:${clickCount},bubbles:true,cancelable:true,composed:true,view:window`;
+}
+
+// Common PointerEvent init (extends mouse init).
+function pointerInit(x: number, y: number, button: number, clickCount: number, pointerId: number = 1): string {
+  return `${mouseInit(x, y, button, clickCount)},pointerId:${pointerId},pointerType:'mouse',isPrimary:true,width:1,height:1,pressure:${button >= 0 ? 0.5 : 0}`;
+}
+
+function keyInit(description: input.KeyDescription): string {
+  return `key:${JSON.stringify(description.key)},code:${JSON.stringify(description.code)},keyCode:${description.keyCode},which:${description.keyCode},bubbles:true,cancelable:true,composed:true,view:window`;
+}
+
+// ---------------------------------------------------------------------------
+// Keyboard
+// ---------------------------------------------------------------------------
+
 class BCRawKeyboard implements input.RawKeyboard {
   private _connection: BrowserControlConnection;
 
@@ -33,101 +55,174 @@ class BCRawKeyboard implements input.RawKeyboard {
     this._connection = connection;
   }
 
-  async keydown(_progress: Progress, _modifiers: Set<types.KeyboardModifier>, _keyName: string, description: input.KeyDescription, _autoRepeat: boolean): Promise<void> {
+  async keydown(_progress: Progress, _modifiers: Set<types.KeyboardModifier>, _keyName: string, description: input.KeyDescription, autoRepeat: boolean): Promise<void> {
+    const ki = keyInit(description);
+    const isPrintable = description.key.length === 1;
+    const charEsc = JSON.stringify(description.key);
+
+    // Full sequence: keydown → (for printable chars: keypress → insert text + InputEvent)
     const code = `
-      document.activeElement && document.activeElement.dispatchEvent(new KeyboardEvent('keydown', {
-        key: ${JSON.stringify(description.key)},
-        code: ${JSON.stringify(description.code)},
-        keyCode: ${description.keyCode},
-        bubbles: true,
-        cancelable: true,
-      }));
-    `;
+(function(){
+  var el = document.activeElement;
+  if (!el) return;
+  el.dispatchEvent(new KeyboardEvent('keydown', {${ki},repeat:${autoRepeat}}));
+  ${isPrintable ? `
+  el.dispatchEvent(new KeyboardEvent('keypress', {${ki},charCode:${JSON.stringify(description.key)}.charCodeAt(0)}));
+  if (el.isContentEditable) {
+    document.execCommand('insertText', false, ${charEsc});
+  } else if ('value' in el) {
+    var start = el.selectionStart || 0;
+    var end = el.selectionEnd || 0;
+    var val = el.value;
+    var setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), 'value');
+    var next = val.slice(0, start) + ${charEsc} + val.slice(end);
+    if (setter && setter.set) setter.set.call(el, next); else el.value = next;
+    el.selectionStart = el.selectionEnd = start + 1;
+    el.dispatchEvent(new InputEvent('input', {bubbles:true,cancelable:false,inputType:'insertText',data:${charEsc}}));
+  }
+  ` : ''}
+})();
+`;
     await this._connection.execute(code);
   }
 
   async keyup(_progress: Progress, _modifiers: Set<types.KeyboardModifier>, _keyName: string, description: input.KeyDescription): Promise<void> {
+    const ki = keyInit(description);
     const code = `
-      document.activeElement && document.activeElement.dispatchEvent(new KeyboardEvent('keyup', {
-        key: ${JSON.stringify(description.key)},
-        code: ${JSON.stringify(description.code)},
-        keyCode: ${description.keyCode},
-        bubbles: true,
-        cancelable: true,
-      }));
-    `;
+(function(){
+  var el = document.activeElement;
+  if (el) el.dispatchEvent(new KeyboardEvent('keyup', {${ki}}));
+})();
+`;
     await this._connection.execute(code);
   }
 
   async sendText(_progress: Progress, text: string): Promise<void> {
     const escaped = JSON.stringify(text);
     const code = `
-      (function() {
-        var el = document.activeElement;
-        if (!el) return;
-        if (el.isContentEditable) {
-          document.execCommand('insertText', false, ${escaped});
-        } else if ('value' in el) {
-          var nativeSetter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), 'value').set;
-          nativeSetter.call(el, el.value + ${escaped});
-          el.dispatchEvent(new Event('input', { bubbles: true }));
-          el.dispatchEvent(new Event('change', { bubbles: true }));
-        }
-      })();
-    `;
+(function(){
+  var el = document.activeElement;
+  if (!el) return;
+  if (el.isContentEditable) {
+    document.execCommand('insertText', false, ${escaped});
+  } else if ('value' in el) {
+    var start = el.selectionStart || 0;
+    var end = el.selectionEnd || 0;
+    var val = el.value;
+    var setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), 'value');
+    var next = val.slice(0, start) + ${escaped} + val.slice(end);
+    if (setter && setter.set) setter.set.call(el, next); else el.value = next;
+    el.selectionStart = el.selectionEnd = start + ${escaped}.length;
+    el.dispatchEvent(new InputEvent('input', {bubbles:true,cancelable:false,inputType:'insertText',data:${escaped}}));
+    el.dispatchEvent(new Event('change', {bubbles:true}));
+  }
+})();
+`;
     await this._connection.execute(code);
   }
 }
 
+// ---------------------------------------------------------------------------
+// Mouse — full pointer + mouse event sequence matching real browser behavior.
+//
+// Real browser sequence for a click at (x, y):
+//   pointerover → mouseover → pointerenter → mouseenter →
+//   pointermove → mousemove →
+//   pointerdown → mousedown → (focus) →
+//   pointerup   → mouseup  → click
+// ---------------------------------------------------------------------------
+
 class BCRawMouse implements input.RawMouse {
   private _connection: BrowserControlConnection;
+  private _lastX: number = 0;
+  private _lastY: number = 0;
 
   constructor(connection: BrowserControlConnection) {
     this._connection = connection;
   }
 
   async move(_progress: Progress, x: number, y: number, _button: types.MouseButton | 'none', _buttons: Set<types.MouseButton>, _modifiers: Set<types.KeyboardModifier>, _forClick: boolean): Promise<void> {
+    const mi = mouseInit(x, y, 0, 0);
+    const pi = pointerInit(x, y, -1, 0);
+    const prevX = this._lastX;
+    const prevY = this._lastY;
+    this._lastX = x;
+    this._lastY = y;
     const code = `
-      var el = document.elementFromPoint(${x}, ${y});
-      if (el) el.dispatchEvent(new MouseEvent('mousemove', { clientX: ${x}, clientY: ${y}, bubbles: true }));
-    `;
+(function(){
+  var prev = document.elementFromPoint(${prevX}, ${prevY});
+  var el = document.elementFromPoint(${x}, ${y});
+  if (!el) return;
+  if (el !== prev) {
+    if (prev) {
+      prev.dispatchEvent(new PointerEvent('pointerout', {${pointerInit(x, y, -1, 0)}}));
+      prev.dispatchEvent(new MouseEvent('mouseout', {${mi},relatedTarget:el}));
+      prev.dispatchEvent(new PointerEvent('pointerleave', {${pointerInit(x, y, -1, 0)},bubbles:false}));
+      prev.dispatchEvent(new MouseEvent('mouseleave', {${mi},relatedTarget:el,bubbles:false}));
+    }
+    el.dispatchEvent(new PointerEvent('pointerover', {${pi}}));
+    el.dispatchEvent(new MouseEvent('mouseover', {${mi},relatedTarget:prev}));
+    el.dispatchEvent(new PointerEvent('pointerenter', {${pi},bubbles:false}));
+    el.dispatchEvent(new MouseEvent('mouseenter', {${mi},relatedTarget:prev,bubbles:false}));
+  }
+  el.dispatchEvent(new PointerEvent('pointermove', {${pi}}));
+  el.dispatchEvent(new MouseEvent('mousemove', {${mi}}));
+})();
+`;
     await this._connection.execute(code);
   }
 
-  async down(_progress: Progress, x: number, y: number, button: types.MouseButton, _buttons: Set<types.MouseButton>, _modifiers: Set<types.KeyboardModifier>, _clickCount: number): Promise<void> {
+  async down(_progress: Progress, x: number, y: number, button: types.MouseButton, _buttons: Set<types.MouseButton>, _modifiers: Set<types.KeyboardModifier>, clickCount: number): Promise<void> {
     const buttonNum = button === 'left' ? 0 : button === 'right' ? 2 : 1;
+    const mi = mouseInit(x, y, buttonNum, clickCount);
+    const pi = pointerInit(x, y, buttonNum, clickCount);
+    this._lastX = x;
+    this._lastY = y;
     const code = `
-      var el = document.elementFromPoint(${x}, ${y});
-      if (el) el.dispatchEvent(new MouseEvent('mousedown', { clientX: ${x}, clientY: ${y}, button: ${buttonNum}, bubbles: true }));
-    `;
+(function(){
+  var el = document.elementFromPoint(${x}, ${y});
+  if (!el) return;
+  el.dispatchEvent(new PointerEvent('pointerdown', {${pi}}));
+  el.dispatchEvent(new MouseEvent('mousedown', {${mi}}));
+  if (el.focus && el !== document.body && el !== document.documentElement) el.focus();
+})();
+`;
     await this._connection.execute(code);
   }
 
-  async up(_progress: Progress, x: number, y: number, button: types.MouseButton, _buttons: Set<types.MouseButton>, _modifiers: Set<types.KeyboardModifier>, _clickCount: number): Promise<void> {
+  async up(_progress: Progress, x: number, y: number, button: types.MouseButton, _buttons: Set<types.MouseButton>, _modifiers: Set<types.KeyboardModifier>, clickCount: number): Promise<void> {
     const buttonNum = button === 'left' ? 0 : button === 'right' ? 2 : 1;
+    const mi = mouseInit(x, y, buttonNum, clickCount);
+    const pi = pointerInit(x, y, buttonNum, clickCount);
+    this._lastX = x;
+    this._lastY = y;
     const code = `
-      var el = document.elementFromPoint(${x}, ${y});
-      if (el) {
-        el.dispatchEvent(new MouseEvent('mouseup', { clientX: ${x}, clientY: ${y}, button: ${buttonNum}, bubbles: true }));
-        el.dispatchEvent(new MouseEvent('click', { clientX: ${x}, clientY: ${y}, button: ${buttonNum}, bubbles: true }));
-      }
-    `;
+(function(){
+  var el = document.elementFromPoint(${x}, ${y});
+  if (!el) return;
+  el.dispatchEvent(new PointerEvent('pointerup', {${pi}}));
+  el.dispatchEvent(new MouseEvent('mouseup', {${mi}}));
+  // el.click() triggers default actions (navigation, submit) from content scripts
+  // unlike dispatchEvent(new MouseEvent('click')) which creates untrusted events.
+  el.click();
+})();
+`;
     await this._connection.execute(code);
   }
 
   async wheel(_progress: Progress, x: number, y: number, _buttons: Set<types.MouseButton>, _modifiers: Set<types.KeyboardModifier>, deltaX: number, deltaY: number): Promise<void> {
     const code = `
-      var el = document.elementFromPoint(${x}, ${y});
-      if (el) el.dispatchEvent(new WheelEvent('wheel', { clientX: ${x}, clientY: ${y}, deltaX: ${deltaX}, deltaY: ${deltaY}, bubbles: true }));
-    `;
+(function(){
+  var el = document.elementFromPoint(${x}, ${y});
+  if (el) el.dispatchEvent(new WheelEvent('wheel', {clientX:${x},clientY:${y},deltaX:${deltaX},deltaY:${deltaY},deltaMode:0,bubbles:true,cancelable:true,composed:true,view:window}));
+})();
+`;
     await this._connection.execute(code);
   }
 }
 
 class BCRawTouchscreen implements input.RawTouchscreen {
-  async tap(_progress: Progress, x: number, y: number, _modifiers: Set<types.KeyboardModifier>): Promise<void> {
-    // Touch events are not easily dispatched from content scripts.
-    // Fall back to click behavior.
+  async tap(_progress: Progress, _x: number, _y: number, _modifiers: Set<types.KeyboardModifier>): Promise<void> {
   }
 }
 

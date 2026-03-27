@@ -32,6 +32,7 @@ program.argument('[session-name]', 'name of the session to create or connect to'
     .option('--headed', 'run in headed mode (non-headless)')
     .option('--extension', 'run with the extension')
     .option('--browser-control <url>', 'connect to a browser-control server')
+    .option('--browser-control-session-id <id>', 'session ID to use with browser-control')
     .option('--browser <name>', 'browser to use (chromium, chrome, firefox, webkit)')
     .option('--persistent', 'use a persistent browser context')
     .option('--profile <path>', 'path to the user data dir')
@@ -84,6 +85,7 @@ export async function resolveCLIConfig(clientInfo: ClientInfo, sessionName: stri
     headless: options.headed ? false : undefined,
     extension: options.extension,
     browserControl: options.browserControl,
+    browserControlSessionId: options.browserControlSessionId,
     userDataDir: options.profile,
     snapshotMode: 'full',
   });

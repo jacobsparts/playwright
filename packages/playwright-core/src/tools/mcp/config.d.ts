@@ -111,6 +111,12 @@ export type Config = {
    */
   browserControl?: string;
 
+  /**
+   * Session ID to use when connecting to a browser-control server.
+   * If omitted, the server picks an available session.
+   */
+  browserControlSessionId?: string;
+
   server?: {
     /**
      * The port to listen on for SSE or MCP transport.

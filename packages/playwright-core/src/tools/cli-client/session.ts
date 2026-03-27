@@ -137,6 +137,8 @@ export class Session {
       args.push('--extension');
     if (cliArgs['browser-control'])
       args.push(`--browser-control=${cliArgs['browser-control']}`);
+    if (cliArgs['browser-control-session-id'])
+      args.push(`--browser-control-session-id=${cliArgs['browser-control-session-id']}`);
     if (cliArgs.browser)
       args.push(`--browser=${cliArgs.browser}`);
     if (cliArgs.persistent)

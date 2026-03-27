@@ -14,11 +14,39 @@ This also installs the `playwright-cli` command globally.
 
 ## Usage
 
+### CLI
+
 ```bash
+# Connect to a browser-control server (picks an available session)
 playwright-cli open --browser-control=http://localhost:3001
+
+# Connect to a specific session
+playwright-cli open --browser-control=http://localhost:3001 --browser-control-session-id=my-session
+
+# Navigate, take snapshots, interact
+playwright-cli goto https://example.com
+playwright-cli snapshot
+playwright-cli click e3
 ```
 
-This connects to a running browser-control server and opens an interactive session. You can then navigate, click, and inspect pages through the CLI.
+### Direct connection (Node.js)
+
+```javascript
+const { chromium } = require('playwright-core');
+
+// Connect (server picks an available session)
+const browser = await chromium.connectToBrowserControl('http://localhost:3001');
+
+// Or connect to a specific session
+const browser = await chromium.connectToBrowserControl('http://localhost:3001', {
+  sessionId: 'my-session',
+});
+
+const context = browser.contexts()[0];
+const page = context.pages()[0];
+await page.goto('https://example.com');
+await browser.close();
+```
 
 ---
 

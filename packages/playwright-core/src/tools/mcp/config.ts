@@ -48,6 +48,7 @@ export type CLIOptions = {
   device?: string;
   extension?: boolean;
   browserControl?: string;
+  browserControlSessionId?: string;
   executablePath?: string;
   grantPermissions?: string[];
   headless?: boolean;
@@ -237,6 +238,7 @@ export function configFromCLIOptions(cliOptions: CLIOptions): Config & { configF
     },
     extension: cliOptions.extension,
     browserControl: cliOptions.browserControl,
+    browserControlSessionId: cliOptions.browserControlSessionId,
     server: {
       port: cliOptions.port,
       host: cliOptions.host,

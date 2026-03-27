@@ -111,6 +111,7 @@ async function createBrowserControlBrowser(config: FullConfig, clientInfo: Clien
   const { BrowserType } = require('../../client/browserType') as typeof import('../../client/browserType');
   const browserType = playwright.chromium as InstanceType<typeof BrowserType>;
   const browser = await browserType.connectToBrowserControl(config.browserControl!, {
+    sessionId: config.browserControlSessionId,
     timeout: 10000,
   });
   await startServer(browser, clientInfo);
