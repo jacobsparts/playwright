@@ -16,10 +16,13 @@
 
 import http from 'http';
 import https from 'https';
+import crypto from 'crypto';
+import type net from 'net';
 
 export class BrowserControlConnection {
   readonly _serverUrl: string;
   private _sessionId: string | undefined;
+  private _claimSocket: net.Socket | undefined;
   // Serialize all session commands — the server only handles one at a time.
   private _commandQueue: Promise<any> = Promise.resolve();
 
@@ -37,7 +40,58 @@ export class BrowserControlConnection {
       data.sessionId = sessionId;
     const result = await this._post('/browser-control/client/acquire', data);
     this._sessionId = result.sessionId;
+    await this._claim();
     return this._sessionId!;
+  }
+
+  private async _claim(): Promise<void> {
+    const url = new URL(this._serverUrl + `/browser-control/client/${this._sessionId}/claim`);
+    const isHttps = url.protocol === 'https:';
+    const key = crypto.randomBytes(16).toString('base64');
+    const options: http.RequestOptions = {
+      hostname: url.hostname,
+      port: url.port,
+      path: url.pathname,
+      headers: {
+        'Upgrade': 'websocket',
+        'Connection': 'Upgrade',
+        'Sec-WebSocket-Key': key,
+        'Sec-WebSocket-Version': '13',
+      },
+    };
+
+    return new Promise((resolve, reject) => {
+      const req = (isHttps ? https : http).request(options);
+      req.on('upgrade', (res, socket, head) => {
+        this._claimSocket = socket;
+        let buf = head;
+        const onData = (chunk: Buffer) => {
+          buf = Buffer.concat([buf, chunk]);
+          // Look for "ready" in WebSocket text frames.
+          // A text frame: 0x81, length byte, then payload.
+          while (buf.length >= 2) {
+            const len = buf[1] & 0x7f;
+            if (buf.length < 2 + len)
+              break;
+            const payload = buf.subarray(2, 2 + len).toString();
+            buf = buf.subarray(2 + len);
+            if (payload === 'ready') {
+              resolve();
+              return;
+            }
+          }
+        };
+        socket.on('data', onData);
+        socket.on('close', () => {
+          this._claimSocket = undefined;
+        });
+        socket.on('error', () => {
+          this._claimSocket = undefined;
+        });
+      });
+      req.on('error', reject);
+      req.end();
+    });
   }
 
   async navigate(url: string): Promise<{ url?: string; title?: string }> {
@@ -119,13 +173,21 @@ export class BrowserControlConnection {
   }
 
   async closeSession(): Promise<void> {
+    this._closeClaimSocket();
     await this._serialized(() =>
       this._request('DELETE', `/browser-control/client/${this._sessionId}`));
     this._sessionId = undefined;
   }
 
   close(): void {
-    // No-op for HTTP connections.
+    this._closeClaimSocket();
+  }
+
+  private _closeClaimSocket(): void {
+    if (this._claimSocket) {
+      this._claimSocket.destroy();
+      this._claimSocket = undefined;
+    }
   }
 
   private _serialized<T>(fn: () => Promise<T>): Promise<T> {
