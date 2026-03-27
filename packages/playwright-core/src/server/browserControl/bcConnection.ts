@@ -48,12 +48,16 @@ export class BrowserControlConnection {
   async execute(script: string): Promise<any> {
     const resp = await this._serialized(() =>
       this._post(`/browser-control/client/${this._sessionId}/execute`, { script }));
-    return resp.result;
+    const result = resp.result;
+    // The server wraps extension errors as {error: "message"}.
+    if (result && typeof result === 'object' && typeof result.error === 'string')
+      throw new Error(result.error);
+    return result;
   }
 
-  async screenshot(): Promise<string> {
+  async screenshot(clip?: { x: number; y: number; width: number; height: number }): Promise<string> {
     const resp = await this._serialized(() =>
-      this._post(`/browser-control/client/${this._sessionId}/screenshot`));
+      this._post(`/browser-control/client/${this._sessionId}/screenshot`, clip ? { clip } : undefined));
     return resp.dataUrl;
   }
 

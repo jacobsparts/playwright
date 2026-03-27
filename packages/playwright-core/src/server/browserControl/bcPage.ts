@@ -30,14 +30,21 @@ import type * as types from '../types';
 // Shared helpers injected into the page for realistic event dispatch.
 // ---------------------------------------------------------------------------
 
-// Common MouseEvent init properties, mirroring what a real browser produces.
-function mouseInit(x: number, y: number, button: number, clickCount: number): string {
-  return `clientX:${x},clientY:${y},screenX:${x},screenY:${y},button:${button},buttons:${button === 0 ? 1 : button === 2 ? 2 : 4},detail:${clickCount},bubbles:true,cancelable:true,composed:true,view:window`;
+// Iframe-aware element resolution: recursively finds element at page coordinates (x,y),
+// piercing through iframes by translating to each iframe's local coordinate space.
+// Returns {el, lx, ly, w} where lx/ly are viewport coords in the target document
+// and w is the target document's window.
+const RESOLVE_HELPER = `function __r(x,y){var d=document,lx=x,ly=y;for(var i=0;i<10;i++){var e=d.elementFromPoint(lx,ly);if(!e)return null;if(e.tagName==='IFRAME'||e.tagName==='FRAME'){try{var c=e.contentDocument;if(c){var r=e.getBoundingClientRect();lx-=r.left+e.clientLeft;ly-=r.top+e.clientTop;d=c;continue}}catch(x){}}return{el:e,lx:lx,ly:ly,w:e.ownerDocument.defaultView||window}}return null}`;
+
+// MouseEvent init properties. cx/cy are JS expressions for local client coordinates
+// (e.g. 't.lx'), sx/sy are numeric screen coordinates, view is a JS expression for the window.
+function mouseInit(cx: string, cy: string, sx: number, sy: number, button: number, clickCount: number, view: string = 'window'): string {
+  return `clientX:${cx},clientY:${cy},screenX:${sx},screenY:${sy},button:${button},buttons:${button === 0 ? 1 : button === 2 ? 2 : 4},detail:${clickCount},bubbles:true,cancelable:true,composed:true,view:${view}`;
 }
 
-// Common PointerEvent init (extends mouse init).
-function pointerInit(x: number, y: number, button: number, clickCount: number, pointerId: number = 1): string {
-  return `${mouseInit(x, y, button, clickCount)},pointerId:${pointerId},pointerType:'mouse',isPrimary:true,width:1,height:1,pressure:${button >= 0 ? 0.5 : 0}`;
+// PointerEvent init (extends mouse init).
+function pointerInit(cx: string, cy: string, sx: number, sy: number, button: number, clickCount: number, view: string = 'window', pointerId: number = 1): string {
+  return `${mouseInit(cx, cy, sx, sy, button, clickCount, view)},pointerId:${pointerId},pointerType:'mouse',isPrimary:true,width:1,height:1,pressure:${button >= 0 ? 0.5 : 0}`;
 }
 
 function keyInit(description: input.KeyDescription): string {
@@ -50,23 +57,97 @@ function keyInit(description: input.KeyDescription): string {
 
 class BCRawKeyboard implements input.RawKeyboard {
   private _connection: BrowserControlConnection;
+  private _onPotentialNavigation: ((url: string) => Promise<void>) | undefined;
 
   constructor(connection: BrowserControlConnection) {
     this._connection = connection;
   }
 
-  async keydown(_progress: Progress, _modifiers: Set<types.KeyboardModifier>, _keyName: string, description: input.KeyDescription, autoRepeat: boolean): Promise<void> {
+  setNavigationCallback(callback: (url: string) => Promise<void>) {
+    this._onPotentialNavigation = callback;
+  }
+
+  async keydown(_progress: Progress, modifiers: Set<types.KeyboardModifier>, _keyName: string, description: input.KeyDescription, autoRepeat: boolean): Promise<void> {
     const ki = keyInit(description);
     const isPrintable = description.key.length === 1;
     const charEsc = JSON.stringify(description.key);
+    const key = description.key;
+    const hasShift = modifiers.has('Shift');
+
+    // Navigation keys: manually adjust cursor since untrusted events don't move it.
+    const isNavKey = ['Home', 'End', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(key);
+    const isDelete = key === 'Delete' || key === 'Backspace';
+    const isSelectAll = key === 'a' && modifiers.has('Control') || key === 'a' && modifiers.has('Meta');
 
     // Full sequence: keydown → (for printable chars: keypress → insert text + InputEvent)
     const code = `
 (function(){
   var el = document.activeElement;
+  while (el && (el.tagName === 'IFRAME' || el.tagName === 'FRAME')) { try { el = el.contentDocument.activeElement; } catch(e) { break; } }
   if (!el) return;
   el.dispatchEvent(new KeyboardEvent('keydown', {${ki},repeat:${autoRepeat}}));
-  ${isPrintable ? `
+  ${isNavKey ? `
+  if ('selectionStart' in el) {
+    var start = el.selectionStart || 0;
+    var end = el.selectionEnd || 0;
+    var len = (el.value || '').length;
+    var hasSelection = start !== end;
+    var key = ${JSON.stringify(key)};
+    var shift = ${hasShift};
+    var anchor = shift ? start : null;
+    var pos;
+    if (key === 'Home' || key === 'ArrowUp') pos = 0;
+    else if (key === 'End' || key === 'ArrowDown') pos = len;
+    else if (key === 'ArrowLeft') pos = (hasSelection && !shift) ? Math.min(start, end) : Math.max(0, start - 1);
+    else if (key === 'ArrowRight') pos = (hasSelection && !shift) ? Math.max(start, end) : Math.min(len, end + 1);
+    if (shift) {
+      el.selectionStart = Math.min(anchor !== null ? anchor : start, pos);
+      el.selectionEnd = Math.max(anchor !== null ? anchor : start, pos);
+    } else {
+      el.selectionStart = el.selectionEnd = pos;
+    }
+  } else if (el.isContentEditable) {
+    var sel = window.getSelection();
+    if (sel && sel.rangeCount) {
+      var key = ${JSON.stringify(key)};
+      if (key === 'Home' || key === 'ArrowUp') sel.modify(${hasShift} ? 'extend' : 'move', 'backward', key === 'Home' || key === 'ArrowUp' ? 'lineboundary' : 'character');
+      else if (key === 'End' || key === 'ArrowDown') sel.modify(${hasShift} ? 'extend' : 'move', 'forward', key === 'End' || key === 'ArrowDown' ? 'lineboundary' : 'character');
+      else if (key === 'ArrowLeft') sel.modify(${hasShift} ? 'extend' : 'move', 'backward', 'character');
+      else if (key === 'ArrowRight') sel.modify(${hasShift} ? 'extend' : 'move', 'forward', 'character');
+    }
+  }
+  ` : isSelectAll ? `
+  if ('selectionStart' in el) {
+    el.selectionStart = 0;
+    el.selectionEnd = (el.value || '').length;
+  } else if (el.isContentEditable) {
+    var sel = window.getSelection();
+    if (sel) { sel.selectAllChildren(el); }
+  }
+  ` : isDelete ? `
+  if ('value' in el) {
+    var start = el.selectionStart || 0;
+    var end = el.selectionEnd || 0;
+    var val = el.value;
+    var setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), 'value');
+    var next, newPos;
+    if (start !== end) {
+      next = val.slice(0, start) + val.slice(end);
+      newPos = start;
+    } else if (${JSON.stringify(key)} === 'Backspace' && start > 0) {
+      next = val.slice(0, start - 1) + val.slice(start);
+      newPos = start - 1;
+    } else if (${JSON.stringify(key)} === 'Delete' && start < val.length) {
+      next = val.slice(0, start) + val.slice(start + 1);
+      newPos = start;
+    } else { next = val; newPos = start; }
+    if (setter && setter.set) setter.set.call(el, next); else el.value = next;
+    el.selectionStart = el.selectionEnd = newPos;
+    el.dispatchEvent(new InputEvent('input', {bubbles:true,cancelable:false,inputType:${JSON.stringify(key === 'Backspace' ? 'deleteContentBackward' : 'deleteContentForward')}}));
+  } else if (el.isContentEditable) {
+    document.execCommand(${JSON.stringify(key === 'Backspace' ? 'delete' : 'forwardDelete')});
+  }
+  ` : isPrintable ? `
   el.dispatchEvent(new KeyboardEvent('keypress', {${ki},charCode:${JSON.stringify(description.key)}.charCodeAt(0)}));
   if (el.isContentEditable) {
     document.execCommand('insertText', false, ${charEsc});
@@ -88,13 +169,28 @@ class BCRawKeyboard implements input.RawKeyboard {
 
   async keyup(_progress: Progress, _modifiers: Set<types.KeyboardModifier>, _keyName: string, description: input.KeyDescription): Promise<void> {
     const ki = keyInit(description);
+    const key = description.key;
+    // For Enter (form submit), check if navigation happened after the key event.
+    const checkNav = key === 'Enter';
     const code = `
 (function(){
   var el = document.activeElement;
   if (el) el.dispatchEvent(new KeyboardEvent('keyup', {${ki}}));
+  ${checkNav ? `return { urlAfter: location.href };` : ''}
 })();
 `;
-    await this._connection.execute(code);
+    const result = await this._connection.execute(code);
+    if (checkNav && result && this._onPotentialNavigation) {
+      // Wait briefly for navigation to start, then check.
+      await new Promise(r => setTimeout(r, 200));
+      try {
+        const status = await this._connection.execute('({ href: location.href })');
+        if (status && status.href !== result.urlAfter)
+          await this._onPotentialNavigation(status.href);
+      } catch {
+        // Page is mid-navigation — will be detected on next operation.
+      }
+    }
   }
 
   async sendText(_progress: Progress, text: string): Promise<void> {
@@ -102,6 +198,7 @@ class BCRawKeyboard implements input.RawKeyboard {
     const code = `
 (function(){
   var el = document.activeElement;
+  while (el && (el.tagName === 'IFRAME' || el.tagName === 'FRAME')) { try { el = el.contentDocument.activeElement; } catch(e) { break; } }
   if (!el) return;
   if (el.isContentEditable) {
     document.execCommand('insertText', false, ${escaped});
@@ -136,55 +233,105 @@ class BCRawMouse implements input.RawMouse {
   private _connection: BrowserControlConnection;
   private _lastX: number = 0;
   private _lastY: number = 0;
+  private _onPotentialNavigation: ((url: string) => Promise<void>) | undefined;
 
   constructor(connection: BrowserControlConnection) {
     this._connection = connection;
   }
 
+  setNavigationCallback(callback: (url: string) => Promise<void>) {
+    this._onPotentialNavigation = callback;
+  }
+
   async move(_progress: Progress, x: number, y: number, _button: types.MouseButton | 'none', _buttons: Set<types.MouseButton>, _modifiers: Set<types.KeyboardModifier>, _forClick: boolean): Promise<void> {
-    const mi = mouseInit(x, y, 0, 0);
-    const pi = pointerInit(x, y, -1, 0);
     const prevX = this._lastX;
     const prevY = this._lastY;
     this._lastX = x;
     this._lastY = y;
     const code = `
 (function(){
-  var prev = document.elementFromPoint(${prevX}, ${prevY});
-  var el = document.elementFromPoint(${x}, ${y});
-  if (!el) return;
+  ${RESOLVE_HELPER}
+  var p = __r(${prevX}, ${prevY});
+  var c = __r(${x}, ${y});
+  if (!c) return;
+  var el = c.el;
+  var prev = p ? p.el : null;
   if (el !== prev) {
     if (prev) {
-      prev.dispatchEvent(new PointerEvent('pointerout', {${pointerInit(x, y, -1, 0)}}));
-      prev.dispatchEvent(new MouseEvent('mouseout', {${mi},relatedTarget:el}));
-      prev.dispatchEvent(new PointerEvent('pointerleave', {${pointerInit(x, y, -1, 0)},bubbles:false}));
-      prev.dispatchEvent(new MouseEvent('mouseleave', {${mi},relatedTarget:el,bubbles:false}));
+      prev.dispatchEvent(new PointerEvent('pointerout', {${pointerInit('p.lx', 'p.ly', x, y, -1, 0, 'p.w')}}));
+      prev.dispatchEvent(new MouseEvent('mouseout', {${mouseInit('p.lx', 'p.ly', x, y, 0, 0, 'p.w')},relatedTarget:el}));
+      prev.dispatchEvent(new PointerEvent('pointerleave', {${pointerInit('p.lx', 'p.ly', x, y, -1, 0, 'p.w')},bubbles:false}));
+      prev.dispatchEvent(new MouseEvent('mouseleave', {${mouseInit('p.lx', 'p.ly', x, y, 0, 0, 'p.w')},relatedTarget:el,bubbles:false}));
     }
-    el.dispatchEvent(new PointerEvent('pointerover', {${pi}}));
-    el.dispatchEvent(new MouseEvent('mouseover', {${mi},relatedTarget:prev}));
-    el.dispatchEvent(new PointerEvent('pointerenter', {${pi},bubbles:false}));
-    el.dispatchEvent(new MouseEvent('mouseenter', {${mi},relatedTarget:prev,bubbles:false}));
+    el.dispatchEvent(new PointerEvent('pointerover', {${pointerInit('c.lx', 'c.ly', x, y, -1, 0, 'c.w')}}));
+    el.dispatchEvent(new MouseEvent('mouseover', {${mouseInit('c.lx', 'c.ly', x, y, 0, 0, 'c.w')},relatedTarget:prev}));
+    el.dispatchEvent(new PointerEvent('pointerenter', {${pointerInit('c.lx', 'c.ly', x, y, -1, 0, 'c.w')},bubbles:false}));
+    el.dispatchEvent(new MouseEvent('mouseenter', {${mouseInit('c.lx', 'c.ly', x, y, 0, 0, 'c.w')},relatedTarget:prev,bubbles:false}));
   }
-  el.dispatchEvent(new PointerEvent('pointermove', {${pi}}));
-  el.dispatchEvent(new MouseEvent('mousemove', {${mi}}));
+  el.dispatchEvent(new PointerEvent('pointermove', {${pointerInit('c.lx', 'c.ly', x, y, -1, 0, 'c.w')}}));
+  el.dispatchEvent(new MouseEvent('mousemove', {${mouseInit('c.lx', 'c.ly', x, y, 0, 0, 'c.w')}}));
 })();
 `;
     await this._connection.execute(code);
   }
 
-  async down(_progress: Progress, x: number, y: number, button: types.MouseButton, _buttons: Set<types.MouseButton>, _modifiers: Set<types.KeyboardModifier>, clickCount: number): Promise<void> {
+  async down(_progress: Progress, x: number, y: number, button: types.MouseButton, _buttons: Set<types.MouseButton>, modifiers: Set<types.KeyboardModifier>, clickCount: number): Promise<void> {
     const buttonNum = button === 'left' ? 0 : button === 'right' ? 2 : 1;
-    const mi = mouseInit(x, y, buttonNum, clickCount);
-    const pi = pointerInit(x, y, buttonNum, clickCount);
+    const hasShift = modifiers.has('Shift');
     this._lastX = x;
     this._lastY = y;
     const code = `
 (function(){
-  var el = document.elementFromPoint(${x}, ${y});
-  if (!el) return;
-  el.dispatchEvent(new PointerEvent('pointerdown', {${pi}}));
-  el.dispatchEvent(new MouseEvent('mousedown', {${mi}}));
-  if (el.focus && el !== document.body && el !== document.documentElement) el.focus();
+  ${RESOLVE_HELPER}
+  var t = __r(${x}, ${y});
+  if (!t) return;
+  var el = t.el;
+  var doc = el.ownerDocument || document;
+  el.dispatchEvent(new PointerEvent('pointerdown', {${pointerInit('t.lx', 't.ly', x, y, buttonNum, clickCount, 't.w')}}));
+  el.dispatchEvent(new MouseEvent('mousedown', {${mouseInit('t.lx', 't.ly', x, y, buttonNum, clickCount, 't.w')}}));
+  if (el.focus && el !== doc.body && el !== doc.documentElement) el.focus();
+  // Position text cursor at click point for input/textarea elements.
+  if ('selectionStart' in el && ('value' in el)) {
+    var rect = el.getBoundingClientRect();
+    var style = t.w.getComputedStyle(el);
+    var padL = parseFloat(style.paddingLeft) || 0;
+    var clickX = t.lx - rect.left - padL + (el.scrollLeft || 0);
+    var val = el.value || '';
+    var canvas = doc.createElement('canvas');
+    var ctx = canvas.getContext('2d');
+    ctx.font = style.font;
+    var best = 0;
+    var bestDist = Infinity;
+    for (var i = 0; i <= val.length; i++) {
+      var w = ctx.measureText(val.slice(0, i)).width;
+      var d = Math.abs(w - clickX);
+      if (d < bestDist) { bestDist = d; best = i; }
+    }
+    if (${hasShift}) {
+      var anchor = el.selectionStart || 0;
+      el.selectionStart = Math.min(anchor, best);
+      el.selectionEnd = Math.max(anchor, best);
+    } else if (${clickCount} >= 2) {
+      var wordStart = best, wordEnd = best;
+      while (wordStart > 0 && /\\w/.test(val[wordStart - 1])) wordStart--;
+      while (wordEnd < val.length && /\\w/.test(val[wordEnd])) wordEnd++;
+      el.selectionStart = wordStart;
+      el.selectionEnd = wordEnd;
+    } else {
+      el.selectionStart = el.selectionEnd = best;
+    }
+  } else if (el.isContentEditable) {
+    var range = doc.caretRangeFromPoint(t.lx, t.ly);
+    if (range) {
+      var sel = t.w.getSelection();
+      if (${hasShift} && sel.rangeCount) {
+        sel.extend(range.startContainer, range.startOffset);
+      } else {
+        sel.removeAllRanges();
+        sel.addRange(range);
+      }
+    }
+  }
 })();
 `;
     await this._connection.execute(code);
@@ -192,29 +339,64 @@ class BCRawMouse implements input.RawMouse {
 
   async up(_progress: Progress, x: number, y: number, button: types.MouseButton, _buttons: Set<types.MouseButton>, _modifiers: Set<types.KeyboardModifier>, clickCount: number): Promise<void> {
     const buttonNum = button === 'left' ? 0 : button === 'right' ? 2 : 1;
-    const mi = mouseInit(x, y, buttonNum, clickCount);
-    const pi = pointerInit(x, y, buttonNum, clickCount);
     this._lastX = x;
     this._lastY = y;
     const code = `
 (function(){
-  var el = document.elementFromPoint(${x}, ${y});
-  if (!el) return;
-  el.dispatchEvent(new PointerEvent('pointerup', {${pi}}));
-  el.dispatchEvent(new MouseEvent('mouseup', {${mi}}));
+  ${RESOLVE_HELPER}
+  var t = __r(${x}, ${y});
+  if (!t) return Promise.resolve({});
+  var el = t.el;
+  el.dispatchEvent(new PointerEvent('pointerup', {${pointerInit('t.lx', 't.ly', x, y, buttonNum, clickCount, 't.w')}}));
+  el.dispatchEvent(new MouseEvent('mouseup', {${mouseInit('t.lx', 't.ly', x, y, buttonNum, clickCount, 't.w')}}));
+  var urlBefore = location.href;
   // el.click() triggers default actions (navigation, submit) from content scripts
   // unlike dispatchEvent(new MouseEvent('click')) which creates untrusted events.
   el.click();
+  // Only detect navigation for clicks in the main document (not inside iframes).
+  var isMainDoc = t.w === window;
+  var link = isMainDoc && el.closest ? el.closest('a[href]') : null;
+  var linkHref = link && link.href && link.href !== urlBefore ? link.href : null;
+  var formAction = null;
+  if (isMainDoc && !linkHref && el.closest) {
+    var form = el.closest('form');
+    if (form) {
+      var tag = el.tagName;
+      var type = (el.type || '').toLowerCase();
+      var isSubmit = (tag === 'BUTTON' && type !== 'button' && type !== 'reset')
+                  || (tag === 'INPUT' && (type === 'submit' || type === 'image'));
+      if (isSubmit) formAction = form.action || urlBefore;
+    }
+  }
+  // Check URL synchronously first, then after a microtask to catch
+  // JS-driven navigation (onclick setting location.href) which is
+  // scheduled but not yet processed.
+  var urlAfter = location.href;
+  if (urlAfter !== urlBefore || linkHref || formAction)
+    return { urlAfter: urlAfter, linkHref: linkHref, formAction: formAction, navigated: urlBefore !== urlAfter };
+  return Promise.resolve().then(function() {
+    return { urlAfter: location.href, linkHref: null, formAction: null, navigated: location.href !== urlBefore };
+  });
 })();
 `;
-    await this._connection.execute(code);
+    const result = await this._connection.execute(code);
+    // Detect navigation: URL changed synchronously, link clicked, or form submitted.
+    if (result && this._onPotentialNavigation) {
+      if (result.navigated)
+        await this._onPotentialNavigation(result.urlAfter);
+      else if (result.linkHref)
+        await this._onPotentialNavigation(result.linkHref);
+      else if (result.formAction)
+        await this._onPotentialNavigation(result.formAction);
+    }
   }
 
   async wheel(_progress: Progress, x: number, y: number, _buttons: Set<types.MouseButton>, _modifiers: Set<types.KeyboardModifier>, deltaX: number, deltaY: number): Promise<void> {
     const code = `
 (function(){
-  var el = document.elementFromPoint(${x}, ${y});
-  if (el) el.dispatchEvent(new WheelEvent('wheel', {clientX:${x},clientY:${y},deltaX:${deltaX},deltaY:${deltaY},deltaMode:0,bubbles:true,cancelable:true,composed:true,view:window}));
+  ${RESOLVE_HELPER}
+  var t = __r(${x}, ${y});
+  if (t && t.el) t.el.dispatchEvent(new WheelEvent('wheel', {clientX:t.lx,clientY:t.ly,deltaX:${deltaX},deltaY:${deltaY},deltaMode:0,bubbles:true,cancelable:true,composed:true,view:t.w}));
 })();
 `;
     await this._connection.execute(code);
@@ -240,11 +422,51 @@ export class BCPage implements PageDelegate {
     this._connection = connection;
     this._browserContext = browserContext;
     this.rawKeyboard = new BCRawKeyboard(connection);
+    this.rawKeyboard.setNavigationCallback(url => this._onImplicitNavigation(url));
     this.rawMouse = new BCRawMouse(connection);
     this.rawTouchscreen = new BCRawTouchscreen();
     this._mainContext = new BCExecutionContext(connection);
     this._utilityContext = new BCExecutionContext(connection);
     this._page = new Page(this, browserContext);
+    this.rawMouse.setNavigationCallback(url => this._onImplicitNavigation(url));
+  }
+
+  private async _onImplicitNavigation(url: string): Promise<void> {
+    const mainFrame = this._page.frameManager.mainFrame();
+    if (url === mainFrame._url)
+      return;
+    const documentId = 'bc-implicit-nav-' + Date.now();
+    // Signal pending navigation — this aborts any stalled raceAgainstEvaluationStallingEvents.
+    this._page.frameManager.frameRequestedNavigation(mainFrame._id, documentId);
+
+    // Wait for the new page to actually load. After el.click() triggers navigation,
+    // chrome.tabs.executeScript will queue scripts until the new page is ready.
+    // Poll until we confirm the URL changed and the document finished loading.
+    const originalUrl = mainFrame._url;
+    let finalUrl = url;
+    for (let i = 0; i < 100; i++) { // Up to ~10 seconds
+      try {
+        const result = await this._connection.execute(
+          '({ href: location.href, ready: document.readyState })'
+        );
+        if (result && result.href !== originalUrl) {
+          finalUrl = result.href;
+          if (result.ready === 'complete')
+            break;
+        }
+      } catch {
+        // Page may be mid-navigation — retry.
+      }
+      await new Promise(r => setTimeout(r, 100));
+    }
+
+    // Recreate execution contexts (old page handles are invalid).
+    this._recreateContexts();
+    // Commit the navigation with the actual final URL.
+    this._page.frameManager.frameCommittedNewDocumentNavigation(
+        mainFrame._id, finalUrl, mainFrame.name(), documentId, false);
+    mainFrame._onLifecycleEvent('domcontentloaded');
+    mainFrame._onLifecycleEvent('load');
   }
 
   async initialize(): Promise<void> {
@@ -308,17 +530,57 @@ export class BCPage implements PageDelegate {
   }
 
   async reload(): Promise<void> {
+    const mainFrame = this._page.frameManager.mainFrame();
+    const originalUrl = mainFrame._url;
+    const documentId = 'bc-reload-' + Date.now();
+    this._page.frameManager.frameRequestedNavigation(mainFrame._id, documentId);
     await this._connection.execute('location.reload()');
+    await this._waitForNavigation(originalUrl, documentId, true /* sameUrlExpected */);
   }
 
   async goBack(): Promise<boolean> {
-    await this._connection.execute('history.back()');
-    return true;
+    return await this._historyNavigation('history.back()');
   }
 
   async goForward(): Promise<boolean> {
-    await this._connection.execute('history.forward()');
+    return await this._historyNavigation('history.forward()');
+  }
+
+  private async _historyNavigation(script: string): Promise<boolean> {
+    const mainFrame = this._page.frameManager.mainFrame();
+    const originalUrl = mainFrame._url;
+    const documentId = 'bc-history-' + Date.now();
+    this._page.frameManager.frameRequestedNavigation(mainFrame._id, documentId);
+    await this._connection.execute(script);
+    // Wait briefly for the navigation to start, then detect the new URL.
+    await new Promise(r => setTimeout(r, 200));
+    await this._waitForNavigation(originalUrl, documentId, false /* sameUrlExpected */);
     return true;
+  }
+
+  private async _waitForNavigation(originalUrl: string, documentId: string, sameUrlExpected: boolean): Promise<void> {
+    const mainFrame = this._page.frameManager.mainFrame();
+    let finalUrl = originalUrl;
+    for (let i = 0; i < 100; i++) { // Up to ~10 seconds
+      try {
+        const result = await this._connection.execute(
+          '({ href: location.href, ready: document.readyState })'
+        );
+        if (result) {
+          finalUrl = result.href;
+          if ((sameUrlExpected || result.href !== originalUrl) && result.ready === 'complete')
+            break;
+        }
+      } catch {
+        // Page may be mid-navigation — retry.
+      }
+      await new Promise(r => setTimeout(r, 100));
+    }
+    this._recreateContexts();
+    this._page.frameManager.frameCommittedNewDocumentNavigation(
+        mainFrame._id, finalUrl, mainFrame.name(), documentId, false);
+    mainFrame._onLifecycleEvent('domcontentloaded');
+    mainFrame._onLifecycleEvent('load');
   }
 
   async requestGC(): Promise<void> {
@@ -334,7 +596,8 @@ export class BCPage implements PageDelegate {
   }
 
   async closePage(_runBeforeUnload: boolean): Promise<void> {
-    await this._connection.closeSession();
+    await this._connection.closeSession().catch(() => {});
+    this._page._didClose();
   }
 
   async updateExtraHTTPHeaders(): Promise<void> { }
@@ -353,8 +616,9 @@ export class BCPage implements PageDelegate {
 
   async setBackgroundColor(_color?: { r: number; g: number; b: number; a: number }): Promise<void> { }
 
-  async takeScreenshot(_progress: Progress, format: string, _documentRect: types.Rect | undefined, _viewportRect: types.Rect | undefined, quality: number | undefined, _fitsViewport: boolean, _scale: 'css' | 'device'): Promise<Buffer> {
-    const dataUrl = await this._connection.screenshot();
+  async takeScreenshot(_progress: Progress, format: string, documentRect: types.Rect | undefined, viewportRect: types.Rect | undefined, quality: number | undefined, _fitsViewport: boolean, _scale: 'css' | 'device'): Promise<Buffer> {
+    const clip = viewportRect || documentRect;
+    const dataUrl = await this._connection.screenshot(clip);
     // dataUrl is like "data:image/png;base64,..."
     const base64Data = dataUrl.split(',')[1];
     return Buffer.from(base64Data, 'base64');
@@ -436,7 +700,62 @@ export class BCPage implements PageDelegate {
   async stopScreencast(): Promise<void> { }
 
   rafCountForStablePosition(): number { return 1; }
-  async inputActionEpilogue(): Promise<void> { }
+  async inputActionEpilogue(): Promise<void> {
+    // Catch-all: detect navigation caused by any input action (form submit,
+    // JS-driven location changes, etc.) that wasn't caught by the click handler.
+    // Check twice with a delay because navigation triggered by JS event handlers
+    // (e.g., onclick setting location.href) is async — the browser processes
+    // it after the current JS task completes.
+    try {
+      const mainFrame = this._page.frameManager.mainFrame();
+      const originalUrl = mainFrame._url;
+      let result = await this._connection.execute(
+        '({ href: location.href, ready: document.readyState })'
+      );
+      if (!result || result.href === originalUrl) {
+        // URL hasn't changed yet — wait briefly and recheck in case
+        // navigation was triggered but hasn't been processed yet.
+        await new Promise(r => setTimeout(r, 100));
+        try {
+          result = await this._connection.execute(
+            '({ href: location.href, ready: document.readyState })'
+          );
+        } catch {
+          // Page is mid-navigation — treat as navigated.
+          return;
+        }
+      }
+      if (result && result.href !== originalUrl) {
+        // URL changed — wait for the page to finish loading.
+        let finalUrl = result.href;
+        if (result.ready !== 'complete') {
+          for (let i = 0; i < 100; i++) {
+            try {
+              const status = await this._connection.execute(
+                '({ href: location.href, ready: document.readyState })'
+              );
+              if (status) {
+                finalUrl = status.href;
+                if (status.ready === 'complete')
+                  break;
+              }
+            } catch {
+              // Page may be mid-navigation — retry.
+            }
+            await new Promise(r => setTimeout(r, 100));
+          }
+        }
+        const documentId = 'bc-epilogue-nav-' + Date.now();
+        this._recreateContexts();
+        this._page.frameManager.frameCommittedNewDocumentNavigation(
+            mainFrame._id, finalUrl, mainFrame.name(), documentId, false);
+        mainFrame._onLifecycleEvent('domcontentloaded');
+        mainFrame._onLifecycleEvent('load');
+      }
+    } catch {
+      // Page may be mid-navigation or unloaded — ignore.
+    }
+  }
   async resetForReuse(_progress: Progress): Promise<void> { }
   shouldToggleStyleSheetToSyncAnimations(): boolean { return false; }
   async setDockTile(_image: Buffer): Promise<void> { }

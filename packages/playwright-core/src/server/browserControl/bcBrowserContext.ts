@@ -171,6 +171,9 @@ export class BCBrowserContext extends BrowserContext {
     for (const page of this._pages)
       await page.close({ reason: _reason });
     this._pages = [];
+    // Close the connection's session on the server so the tab is released.
+    await this._connection.closeSession().catch(() => {});
+    this._browser._removeContext(this);
   }
 
   protected onClosePersistent(): void { }

@@ -32,9 +32,9 @@ export class BCBrowser extends Browser {
     const connection = new BrowserControlConnection(serviceURL);
     await connection.acquire(sessionId);
 
-    // Navigate to about:blank so we start with a fresh tab instead of
-    // taking over whatever page was previously open in this session.
-    await connection.navigate('about:blank');
+    // Navigate to a fresh page instead of taking over whatever page was
+    // previously open in this session.
+    await connection.navigate('https://www.google.com');
 
     const browser = new BCBrowser(parent, connection, options);
 
@@ -64,7 +64,7 @@ export class BCBrowser extends Browser {
     // Each new context acquires a new session from the server.
     const connection = new BrowserControlConnection(this._connection['_serverUrl']);
     await connection.acquire();
-    await connection.navigate('about:blank');
+    await connection.navigate('https://www.google.com');
     const context = new BCBrowserContext(this, connection, options);
     this._contexts.push(context);
     await context._initialize();
@@ -88,9 +88,19 @@ export class BCBrowser extends Browser {
     return 'browser-control';
   }
 
+  override async close(options: { reason?: string } = {}): Promise<void> {
+    for (const context of this._contexts)
+      await context.close({ reason: options.reason });
+    await this._disconnect();
+  }
+
+  _removeContext(context: BCBrowserContext): void {
+    this._contexts = this._contexts.filter(c => c !== context);
+  }
+
   async _disconnect(): Promise<void> {
     this._connected = false;
     this._connection.close();
-    this.emit(Browser.Events.Disconnected);
+    this._didClose();
   }
 }

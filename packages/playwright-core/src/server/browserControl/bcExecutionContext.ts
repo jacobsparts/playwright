@@ -20,31 +20,19 @@ import { parseEvaluationResultValue } from '../../utils/isomorphic/utilityScript
 
 import type { BrowserControlConnection } from './bcConnection';
 
-const HANDLE_STORE_INIT = `
-(function() {
-  if (window.__pwHandles) return;
-  window.__pwHandles = new Map();
-  window.__pwNextId = 1;
-})();
-`;
+// Inline initialization guard — prepended to scripts that need the handle store.
+// No separate round-trip; idempotent so safe after undetected navigations.
+const HANDLE_STORE_GUARD = `if(!window.__pwHandles){window.__pwHandles=new Map();window.__pwNextId=1;}`;
 
 export class BCExecutionContext implements js.ExecutionContextDelegate {
   private _connection: BrowserControlConnection;
-  private _handleStoreInitialized = false;
 
   constructor(connection: BrowserControlConnection) {
     this._connection = connection;
   }
 
-  private async _ensureHandleStore(): Promise<void> {
-    if (this._handleStoreInitialized)
-      return;
-    await this._connection.execute(HANDLE_STORE_INIT);
-    this._handleStoreInitialized = true;
-  }
-
   resetHandleStore(): void {
-    this._handleStoreInitialized = false;
+    // No cached state to reset — the guard is inline in every script.
   }
 
   private async _awaitIfAsync(result: any): Promise<any> {
@@ -79,12 +67,13 @@ export class BCExecutionContext implements js.ExecutionContextDelegate {
   }
 
   async rawEvaluateHandle(context: js.ExecutionContext, expression: string): Promise<js.JSHandle> {
-    await this._ensureHandleStore();
+    // Handle store guard is inlined in the script below.
     const escapedExpr = JSON.stringify(expression);
     // Use synchronous eval to avoid Promise serialization issues.
     // If the expression returns a Promise, we store it and poll.
     const script = `
 (function() {
+  ${HANDLE_STORE_GUARD}
   var __result;
   try { __result = (0, eval)(${escapedExpr}); } catch(e) { return { __pwError: true, message: e.message }; }
   if (__result && typeof __result === 'object' && typeof __result.then === 'function') {
@@ -131,7 +120,7 @@ export class BCExecutionContext implements js.ExecutionContextDelegate {
   }
 
   async evaluateWithArguments(expression: string, returnByValue: boolean, utilityScript: js.JSHandle, values: any[], handles: js.JSHandle[]): Promise<any> {
-    await this._ensureHandleStore();
+    // Handle store guard is inlined in the script below.
     const utilityId = utilityScript._objectId;
 
     // Build arguments array
@@ -154,6 +143,9 @@ export class BCExecutionContext implements js.ExecutionContextDelegate {
     // Synchronous evaluation with async fallback via polling.
     const script = `
 (function() {
+  ${HANDLE_STORE_GUARD}
+  if (!window.__pwHandles.has(${JSON.stringify(utilityId)}))
+    return { __pwStaleContext: true };
   var __fn = ${expression};
   var __self = window.__pwHandles.get(${JSON.stringify(utilityId)});
   var __args = [${argParts.join(', ')}];
@@ -176,6 +168,11 @@ export class BCExecutionContext implements js.ExecutionContextDelegate {
 
     try {
       let result = await this._connection.execute(script);
+      if (result && result.__pwStaleContext) {
+        // The utility script handle no longer exists — page navigated since
+        // the context was created. Throw so the framework recreates the context.
+        throw new Error('Execution context was destroyed, most likely because of a navigation.');
+      }
       if (result && result.__pwError)
         throw new js.JavaScriptErrorInEvaluate(result.message);
 
@@ -183,7 +180,7 @@ export class BCExecutionContext implements js.ExecutionContextDelegate {
       if (result && result.__pwAsync) {
         const resolved = await this._awaitIfAsync(result);
         if (returnByValue)
-          return parseEvaluationResultValue(resolved.value !== undefined ? resolved.value : resolved);
+          return parseEvaluationResultValue(resolved != null && resolved.value !== undefined ? resolved.value : resolved);
         // For handle results, the resolved object is stored in the handle store
         const storeScript = `
 (function() {
@@ -223,9 +220,9 @@ export class BCExecutionContext implements js.ExecutionContextDelegate {
     if (!object._objectId)
       return new Map();
 
-    await this._ensureHandleStore();
     const script = `
 (function() {
+  ${HANDLE_STORE_GUARD}
   var __obj = window.__pwHandles.get(${JSON.stringify(object._objectId)});
   if (!__obj || typeof __obj !== 'object') return [];
   var __result = [];
