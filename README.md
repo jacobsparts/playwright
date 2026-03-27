@@ -1,4 +1,4 @@
-# 🎭 Playwright (browser-control fork)
+# Playwright (browser-control fork)
 
 ## Install
 
@@ -7,29 +7,19 @@ git clone https://github.com/jacobsparts/playwright
 cd playwright
 npm install
 npm run build
-npm install -g ./packages/playwright-core
 ```
 
-This also installs the `playwright-cli` command globally.
+### Python
+
+If you're using the [Python bindings](https://github.com/jacobsparts/playwright-python), you don't need to clone this repo manually — it's pulled in automatically:
+
+```bash
+pip install git+https://github.com/jacobsparts/playwright-python
+```
 
 ## Usage
 
-### CLI
-
-```bash
-# Connect to a browser-control server (picks an available session)
-playwright-cli open --browser-control=http://localhost:3001
-
-# Connect to a specific session
-playwright-cli open --browser-control=http://localhost:3001 --browser-control-session-id=my-session
-
-# Navigate, take snapshots, interact
-playwright-cli goto https://example.com
-playwright-cli snapshot
-playwright-cli click e3
-```
-
-### Direct connection (Node.js)
+### Node.js
 
 ```javascript
 const { chromium } = require('playwright-core');
